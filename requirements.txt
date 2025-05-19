@@ -1,0 +1,15 @@
+black
+
+pika
+boto3
+aio-pika
+aioboto3~=14.3.0
+SQLAlchemy
+aiosqlite
+alembic
+python-dotenv
+pydantic-settings
+
+uuid7
+pytz
+
