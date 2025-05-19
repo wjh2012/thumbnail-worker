@@ -1,7 +1,5 @@
 import numpy as np
 
-from app.service.validation_result import ValidationResult
-
 
 class ValidationService:
     def __init__(self, detectors: list):

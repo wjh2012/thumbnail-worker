@@ -16,15 +16,15 @@ class Settings(BaseSettings):
     rabbitmq_user: str
     rabbitmq_password: str
 
-    rabbitmq_image_validation_consume_exchange: str
-    rabbitmq_image_validation_consume_queue: str
-    rabbitmq_image_validation_consume_routing_key: str
+    rabbitmq_image_thumbnail_consume_exchange: str
+    rabbitmq_image_thumbnail_consume_queue: str
+    rabbitmq_image_thumbnail_consume_routing_key: str
 
-    rabbitmq_image_validation_publish_exchange: str
-    rabbitmq_image_validation_publish_routing_key: str
+    rabbitmq_image_thumbnail_publish_exchange: str
+    rabbitmq_image_thumbnail_publish_routing_key: str
 
-    rabbitmq_image_validation_dlx: str
-    rabbitmq_image_validation_dlx_routing_key: str
+    rabbitmq_image_thumbnail_dlx: str
+    rabbitmq_image_thumbnail_dlx_routing_key: str
 
     model_config = SettingsConfigDict(env_file=".env")
 

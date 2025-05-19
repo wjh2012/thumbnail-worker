@@ -1,4 +1,5 @@
-black
+opencv-python-headless
+pillow
 
 pika
 boto3
@@ -12,4 +13,4 @@ pydantic-settings
 
 uuid7
 pytz
-
+black

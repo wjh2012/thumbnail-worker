@@ -3,5 +3,5 @@ from typing import Optional
 
 
 @dataclass
-class ValidationResult:
-    is_blank: Optional[bool] = None
+class ThumbnailResult:
+    thumbnail_created: Optional[bool] = None
