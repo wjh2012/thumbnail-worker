@@ -1,18 +1,16 @@
 import io
 import json
 import uuid
-from dataclasses import asdict
 from datetime import datetime
 
 import aio_pika
 import logging
 
-import numpy as np
 from PIL import Image
 from aio_pika.abc import AbstractIncomingMessage
 
 from app.config.env_config import get_settings
-from app.service.validation_service import ValidationService
+from app.service.thumbnail_service import ThumbnailService
 from app.storage.aio_boto import AioBoto
 from app.db.database import AsyncSessionLocal
 from app.db.models import ImageThumbnailResult
@@ -28,24 +26,24 @@ class AioConsumer:
     def __init__(
         self,
         minio_manager: AioBoto,
-        validation_service: ValidationService,
+        thumbnail_service: ThumbnailService,
     ):
         self.minio_manager = minio_manager
-        self.validation_service = validation_service
+        self.thumbnail_service = thumbnail_service
 
         self.amqp_url = f"amqp://{config.rabbitmq_user}:{config.rabbitmq_password}@{config.rabbitmq_host}:{config.rabbitmq_port}/"
 
-        self.consume_exchange_name = config.rabbitmq_image_validation_consume_exchange
-        self.consume_queue_name = config.rabbitmq_image_validation_consume_queue
-        self.consume_routing_key = config.rabbitmq_image_validation_consume_routing_key
+        self.consume_exchange_name = config.rabbitmq_image_thumbnail_consume_exchange
+        self.consume_queue_name = config.rabbitmq_image_thumbnail_consume_queue
+        self.consume_routing_key = config.rabbitmq_image_thumbnail_consume_routing_key
 
-        self.publish_exchange_name = config.rabbitmq_image_validation_publish_exchange
-        self.publish_routing_key = config.rabbitmq_image_validation_publish_routing_key
+        self.publish_exchange_name = config.rabbitmq_image_thumbnail_publish_exchange
+        self.publish_routing_key = config.rabbitmq_image_thumbnail_publish_routing_key
 
         self.prefetch_count = 1
 
-        self.dlx_name = config.rabbitmq_image_validation_dlx
-        self.dlx_routing_key = config.rabbitmq_image_validation_dlx_routing_key
+        self.dlx_name = config.rabbitmq_image_thumbnail_dlx
+        self.dlx_routing_key = config.rabbitmq_image_thumbnail_dlx_routing_key
 
         self._connection = None
         self._channel = None
@@ -96,66 +94,105 @@ class AioConsumer:
             message_received_time = datetime.now()
             logging.info("📩 메시지 수신!")
 
-            data = json.loads(message.body)
-            gid = data["gid"]
-            file_name = data["file_name"]
-            bucket_name = data["bucket"]
-
+            # 메시지 파싱 및 검증
             try:
-                gid = uuid.UUID(gid)
-            except ValueError:
-                logging.error(f"❌ 유효하지 않은 UUID 형식: {gid}")
+                data = json.loads(message.body)
+                gid = uuid.UUID(data["gid"])
+                original_object_key = data["original_object_key"]
+                bucket_name = data["bucket"]
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                logging.error(f"❌ 메시지 파싱 실패: {e}")
                 return
 
             file_obj = io.BytesIO()
-            await self.minio_manager.download_image_with_client(
-                bucket_name=bucket_name, key=file_name, file_obj=file_obj
-            )
-            file_received_time = datetime.now()
-
-            file_length = file_obj.getbuffer().nbytes
-            logging.info(f"✅ MinIO 파일 다운로드 성공: Size: {file_length} bytes")
-
-            file_obj.seek(0)
-
             try:
+                await self.minio_manager.download_image_with_client(
+                    bucket_name=bucket_name, key=original_object_key, file_obj=file_obj
+                )
+                file_received_time = datetime.now()
+                file_length = file_obj.getbuffer().nbytes
+                logging.info(f"✅ MinIO 파일 다운로드 성공: Size: {file_length} bytes")
+
+                file_obj.seek(0)
                 image = Image.open(file_obj)
-                image_np = np.array(image)
+                image.verify()
+                file_obj.seek(0)
+                image = Image.open(file_obj)
+
             except Exception as e:
-                logging.error(f"이미지 변환 실패: {e}")
-                file_obj.close()
+                logging.error(f"❌ 이미지 로딩 실패: {e}")
                 return
 
-            validation_result = self.validation_service.validate(image_np)
+            try:
+                # 썸네일 생성
+                thumbnail_image = self.thumbnail_service.generate_small_thumbnail(image)
+
+                # 썸네일 메모리 저장
+                thumbnail_buffer = io.BytesIO()
+                image_format = image.format or "JPEG"  # 포맷이 없을 경우 기본값
+                thumbnail_image.save(thumbnail_buffer, format=image_format)
+                thumbnail_buffer.seek(0)
+
+                # 썸네일 키 생성
+                original_filename = original_object_key.split("/")[-1]
+                _, ext = original_filename.rsplit(".", 1)
+                thumbnail_object_key = self.thumbnail_service.generate_thumbnail_object_key(
+                    gid=gid, ext=ext
+                )
+                await self.minio_manager.upload_image_with_client(
+                    bucket_name=bucket_name, key=thumbnail_object_key, file=thumbnail_buffer
+                )
+            except Exception as e:
+                logging.error(f"❌ 썸네일 생성 실패: {e}")
+                return
+            finally:
+                file_obj.close()
+
             created_time = datetime.now()
-            file_obj.close()
 
             try:
                 async with AsyncSessionLocal() as session:
-                    created_time = datetime.now()
-                    validation_result_orm = ImageThumbnailResult(
+                    thumbnail_result_orm = ImageThumbnailResult(
                         gid=gid,
-                        is_blank=validation_result.is_blank,
-                        is_folded=False,
-                        tilt_angle=0.1,
+                        thumbnail_created=True,
+                        thumbnail_object_key=thumbnail_object_key,
                         message_received_time=message_received_time,
                         file_received_time=file_received_time,
                         created_time=created_time,
                     )
-                    session.add(validation_result_orm)
+                    session.add(thumbnail_result_orm)
                     await session.commit()
                     logging.info("✅ DB에 정보 저장 완료")
 
                 await self.publish_message(
                     message_body={
                         "gid": str(gid),
-                        "status": "completed",
-                        "validation_result": asdict(validation_result),
-                        "created_time": str(created_time),
+                        "status": "success",
+                        "thumbnail_object_key": thumbnail_object_key,
+                        "created_time": created_time.isoformat(),
                     },
                 )
             except Exception as e:
-                logging.error(f"저장 실패: {e}")
+                logging.error(f"DB 저장 실패: {e}")
+
+                try:
+                    await self.minio_manager.delete_object(
+                        bucket_name=bucket_name,
+                        key=thumbnail_object_key
+                    )
+                    logging.info(f"🗑️ 썸네일 삭제 완료: {thumbnail_object_key}")
+
+                except Exception as delete_err:
+                    logging.error(f"❌ 썸네일 삭제 실패: {delete_err}")
+
+                await self.publish_message(
+                    message_body={
+                        "gid": str(gid),
+                        "status": "error",
+                        "created_time": created_time.isoformat(),
+                    },
+                )
+
 
     async def publish_message(self, message_body: dict):
         await self._publish_exchange.publish(

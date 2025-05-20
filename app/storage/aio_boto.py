@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import aioboto3
 from app.config.custom_logger import time_logger
@@ -6,6 +7,9 @@ from app.config.env_config import get_settings
 
 config = get_settings()
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 class AioBoto:
     def __init__(self):
@@ -15,6 +19,9 @@ class AioBoto:
         self.s3_client = None
 
     async def connect(self):
+        if self.s3_client:
+            return
+
         self._session = aioboto3.Session()
         self.s3_client_cm = self._session.client(
             "s3",
@@ -26,18 +33,31 @@ class AioBoto:
 
     @time_logger
     async def upload_image_with_client(self, file, bucket_name: str, key: str):
+        await self.connect()
         await self.s3_client.upload_fileobj(file, Bucket=bucket_name, Key=key)
-        print(f"✅ MinIO client 파일 업로드 성공: {key} (Bucket: {bucket_name})")
+        logging.info(f"✅ MinIO client 파일 업로드 성공: {key} (Bucket: {bucket_name})")
 
     @time_logger
     async def download_image_with_client(
         self, bucket_name: str, key: str, file_obj: io.BytesIO
     ):
+        await self.connect()
         await self.s3_client.download_fileobj(
             Bucket=bucket_name, Key=key, Fileobj=file_obj
         )
 
-    async def close(self):
+    @time_logger
+    async def delete_object(self, bucket_name: str, key: str):
+        await self.connect()
+        try:
+            await self.s3_client.delete_object(Bucket=bucket_name, Key=key)
+            logging.info(f"🗑️ MinIO 객체 삭제 성공: {key} (Bucket: {bucket_name})")
+        except Exception as e:
+            logging.error(f"❌ MinIO 객체 삭제 실패: {e}")
+            raise
+
+
+async def close(self):
         if self.s3_client_cm:
             await self.s3_client_cm.__aexit__(None, None, None)
-        print("❌ Minio 연결 종료")
+        logging.info("❌ Minio 연결 종료")

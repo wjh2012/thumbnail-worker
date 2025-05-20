@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     minio_port: int
     minio_user: str
     minio_password: str
+    minio_bucket: str
 
     rabbitmq_host: str
     rabbitmq_port: int
@@ -26,10 +27,12 @@ class Settings(BaseSettings):
     rabbitmq_image_thumbnail_dlx: str
     rabbitmq_image_thumbnail_dlx_routing_key: str
 
-    model_config = SettingsConfigDict(env_file=".env")
+    thumbnail_image_object_key_prefix: str
 
     database_url: str
     alembic_database_url: str
+
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 @lru_cache

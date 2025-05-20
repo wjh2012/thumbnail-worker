@@ -3,8 +3,7 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.service.detector.blank_detector import BlankDetector
-from app.service.validation_service import ValidationService
+from app.service.thumbnail_service import ThumbnailService
 
 import asyncio
 import pytz
@@ -22,10 +21,9 @@ KST = pytz.timezone("Asia/Seoul")
 async def main():
     minio = AioBoto()
     await minio.connect()
-    blank_detector = BlankDetector()
-    validation_service = ValidationService([blank_detector])
+    thumbnail_service = ThumbnailService()
 
-    consumer = AioConsumer(minio_manager=minio, validation_service=validation_service)
+    consumer = AioConsumer(minio_manager=minio, thumbnail_service=thumbnail_service)
     await consumer.connect()
 
     consume_task = asyncio.create_task(consumer.consume())
