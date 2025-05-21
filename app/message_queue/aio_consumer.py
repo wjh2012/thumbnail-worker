@@ -121,7 +121,7 @@ class AioConsumer:
                     key=original_object_key,
                     file_obj=file_obj,
                 )
-                file_received_time = datetime.now()
+                file_received_time = datetime.now(timezone.utc)
                 file_length = file_obj.getbuffer().nbytes
                 logging.info(f"✅ MinIO 파일 다운로드 성공: Size: {file_length} bytes")
 
