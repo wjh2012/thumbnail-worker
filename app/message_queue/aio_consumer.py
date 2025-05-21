@@ -169,7 +169,7 @@ class AioConsumer:
             finally:
                 file_obj.close()
 
-            created_time = datetime.now()
+            created_time = datetime.now(timezone.utc)
 
             try:
                 async with AsyncSessionLocal() as session:
