@@ -1,15 +1,22 @@
 import io
 import json
 import uuid
-from datetime import datetime
+from dataclasses import asdict
+from datetime import datetime, timezone
 
 import aio_pika
 import logging
 
 from PIL import Image
 from aio_pika.abc import AbstractIncomingMessage
+from uuid_extensions import uuid7str
 
 from app.config.env_config import get_settings
+from app.message_queue.consume_message import parse_message
+from app.message_queue.publish_message import (
+    PublishMessageHeader,
+    PublishMessagePayload,
+)
 from app.service.thumbnail_service import ThumbnailService
 from app.storage.aio_boto import AioBoto
 from app.db.database import AsyncSessionLocal
@@ -91,23 +98,28 @@ class AioConsumer:
 
     async def on_message(self, message: AbstractIncomingMessage) -> None:
         async with message.process(requeue=True):
-            message_received_time = datetime.now()
+            message_received_time = datetime.now(timezone.utc)
             logging.info("📩 메시지 수신!")
 
-            # 메시지 파싱 및 검증
-            try:
-                data = json.loads(message.body)
-                gid = uuid.UUID(data["gid"])
-                original_object_key = data["original_object_key"]
-                bucket_name = data["bucket"]
-            except (ValueError, KeyError, json.JSONDecodeError) as e:
-                logging.error(f"❌ 메시지 파싱 실패: {e}")
+            header, payload = parse_message(message)
+            if not header or not payload:
+                logging.warning("⚠️ 메시지 파싱 실패로 인해 처리를 중단합니다.")
                 return
+
+            gid = payload.gid
+            original_object_key = payload.original_object_key
+            download_bucket_name = payload.bucket
+
+            logging.info(
+                f"✅ 메시지 파싱 완료 - GID: {gid}, Bucket: {download_bucket_name}"
+            )
 
             file_obj = io.BytesIO()
             try:
                 await self.minio_manager.download_image_with_client(
-                    bucket_name=bucket_name, key=original_object_key, file_obj=file_obj
+                    bucket_name=download_bucket_name,
+                    key=original_object_key,
+                    file_obj=file_obj,
                 )
                 file_received_time = datetime.now()
                 file_length = file_obj.getbuffer().nbytes
@@ -133,14 +145,23 @@ class AioConsumer:
                 thumbnail_image.save(thumbnail_buffer, format=image_format)
                 thumbnail_buffer.seek(0)
 
+                # 버킷
+                upload_bucket_name = f"{config.minio_bucket}-{config.run_mode}"
+
                 # 썸네일 키 생성
                 original_filename = original_object_key.split("/")[-1]
                 _, ext = original_filename.rsplit(".", 1)
-                thumbnail_object_key = self.thumbnail_service.generate_thumbnail_object_key(
-                    gid=gid, ext=ext
+                thumbnail_object_key = (
+                    self.thumbnail_service.generate_thumbnail_object_key(
+                        gid=gid, ext=ext
+                    )
                 )
+                thumbnail_created_utc_iso_time = datetime.now(timezone.utc).isoformat()
+
                 await self.minio_manager.upload_image_with_client(
-                    bucket_name=bucket_name, key=thumbnail_object_key, file=thumbnail_buffer
+                    bucket_name=upload_bucket_name,
+                    key=thumbnail_object_key,
+                    file=thumbnail_buffer,
                 )
             except Exception as e:
                 logging.error(f"❌ 썸네일 생성 실패: {e}")
@@ -153,7 +174,7 @@ class AioConsumer:
             try:
                 async with AsyncSessionLocal() as session:
                     thumbnail_result_orm = ImageThumbnailResult(
-                        gid=gid,
+                        gid=uuid.UUID(gid),
                         thumbnail_created=True,
                         thumbnail_object_key=thumbnail_object_key,
                         message_received_time=message_received_time,
@@ -164,43 +185,57 @@ class AioConsumer:
                     await session.commit()
                     logging.info("✅ DB에 정보 저장 완료")
 
-                await self.publish_message(
-                    message_body={
-                        "gid": str(gid),
-                        "status": "success",
-                        "thumbnail_object_key": thumbnail_object_key,
-                        "created_time": created_time.isoformat(),
-                    },
+                body = PublishMessagePayload(
+                    gid=gid,
+                    status="success",
+                    bucket=upload_bucket_name,
+                    thumbnail_object_key=thumbnail_object_key,
+                    created_at=thumbnail_created_utc_iso_time,
                 )
+                await self.publish_message(trace_id=header.trace_id, body=body)
+
             except Exception as e:
                 logging.error(f"DB 저장 실패: {e}")
 
                 try:
                     await self.minio_manager.delete_object(
-                        bucket_name=bucket_name,
-                        key=thumbnail_object_key
+                        bucket_name=upload_bucket_name, key=thumbnail_object_key
                     )
                     logging.info(f"🗑️ 썸네일 삭제 완료: {thumbnail_object_key}")
 
                 except Exception as delete_err:
                     logging.error(f"❌ 썸네일 삭제 실패: {delete_err}")
 
-                await self.publish_message(
-                    message_body={
-                        "gid": str(gid),
-                        "status": "error",
-                        "created_time": created_time.isoformat(),
-                    },
+                body = PublishMessagePayload(
+                    gid=gid,
+                    status="failed",
+                    bucket=upload_bucket_name,
+                    thumbnail_object_key=thumbnail_object_key,
+                    created_at=thumbnail_created_utc_iso_time,
                 )
 
+                await self.publish_message(trace_id=header.trace_id, body=body)
 
-    async def publish_message(self, message_body: dict):
+    async def publish_message(self, trace_id: str, body: PublishMessagePayload):
+        event_id = uuid7str()
+
+        headers = PublishMessageHeader(
+            event_id=event_id,
+            event_type=self.publish_routing_key,
+            trace_id=trace_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            source_service="image-mock-producer",
+        )
+
+        message = aio_pika.Message(
+            body=json.dumps(asdict(body)).encode("utf-8"),
+            headers=asdict(headers),
+            content_type="application/json",
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        )
+
         await self._publish_exchange.publish(
-            aio_pika.Message(
-                body=json.dumps(message_body).encode(),
-                content_type="application/json",
-                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-            ),
+            message=message,
             routing_key=self.publish_routing_key,
         )
         logging.info(f"📤 메시지 발행 완료: {self.publish_routing_key}")

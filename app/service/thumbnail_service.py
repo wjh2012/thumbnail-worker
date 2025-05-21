@@ -20,4 +20,4 @@ class ThumbnailService:
         time_part = now.strftime("%H%M%S")
 
         prefix = config.thumbnail_image_object_key_prefix
-        return f"{prefix}/{date_path}/{time_part}_{short_uuid}.{ext}"
+        return f"{date_path}/{prefix}/{time_part}_{short_uuid}.{ext}"
