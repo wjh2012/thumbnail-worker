@@ -224,7 +224,7 @@ class AioConsumer:
             event_type=self.publish_routing_key,
             trace_id=trace_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
-            source_service="image-mock-producer",
+            source_service="image-thumbnail-worker",
         )
 
         message = aio_pika.Message(
