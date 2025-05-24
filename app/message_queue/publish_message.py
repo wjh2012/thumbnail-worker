@@ -12,9 +12,14 @@ class PublishMessageHeader:
 
 
 @dataclass
-class PublishMessagePayload:
-    gid: str
-    status: str
+class ThumbnailServiceData:
     bucket: str
     thumbnail_object_key: str
-    created_at: str
+
+
+@dataclass
+class PublishMessageBody:
+    gid: str
+    status: Literal["success", "fail"]
+    completed_at: str
+    payload: ThumbnailServiceData

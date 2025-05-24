@@ -15,7 +15,8 @@ from app.config.env_config import get_settings
 from app.message_queue.consume_message import parse_message
 from app.message_queue.publish_message import (
     PublishMessageHeader,
-    PublishMessagePayload,
+    PublishMessageBody,
+    ThumbnailServiceData,
 )
 from app.service.thumbnail_service import ThumbnailService
 from app.storage.aio_boto import AioBoto
@@ -156,7 +157,6 @@ class AioConsumer:
                         gid=gid, ext=ext
                     )
                 )
-                thumbnail_created_utc_iso_time = datetime.now(timezone.utc).isoformat()
 
                 await self.minio_manager.upload_image_with_client(
                     bucket_name=upload_bucket_name,
@@ -185,13 +185,18 @@ class AioConsumer:
                     await session.commit()
                     logging.info("✅ DB에 정보 저장 완료")
 
-                body = PublishMessagePayload(
-                    gid=gid,
-                    status="success",
+                data = ThumbnailServiceData(
                     bucket=upload_bucket_name,
                     thumbnail_object_key=thumbnail_object_key,
-                    created_at=thumbnail_created_utc_iso_time,
                 )
+
+                body = PublishMessageBody(
+                    gid=gid,
+                    status="success",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    payload=data,
+                )
+
                 await self.publish_message(trace_id=header.trace_id, body=body)
 
             except Exception as e:
@@ -206,17 +211,21 @@ class AioConsumer:
                 except Exception as delete_err:
                     logging.error(f"❌ 썸네일 삭제 실패: {delete_err}")
 
-                body = PublishMessagePayload(
-                    gid=gid,
-                    status="failed",
+                data = ThumbnailServiceData(
                     bucket=upload_bucket_name,
                     thumbnail_object_key=thumbnail_object_key,
-                    created_at=thumbnail_created_utc_iso_time,
+                )
+
+                body = PublishMessageBody(
+                    gid=gid,
+                    status="fail",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    payload=data,
                 )
 
                 await self.publish_message(trace_id=header.trace_id, body=body)
 
-    async def publish_message(self, trace_id: str, body: PublishMessagePayload):
+    async def publish_message(self, trace_id: str, body: PublishMessageBody):
         event_id = uuid7str()
 
         headers = PublishMessageHeader(
