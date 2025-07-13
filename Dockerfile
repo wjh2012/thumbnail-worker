@@ -10,5 +10,8 @@ COPY . /app
 WORKDIR /app
 RUN uv sync --frozen --no-cache
 
+# Alembic 마이그레이션
+RUN uv run alembic upgrade head
+
 # Command to run worker
 CMD ["uv", "run", "app/main.py"]
